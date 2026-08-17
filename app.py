@@ -1,1963 +1,448 @@
+"""
+Wi-Fi Band Analyzer — Professional Dashboard v2
+Run:
+    streamlit run src/app.py
+"""
+
 import os
 import sys
 import time
-import math
 import requests
-import streamlit as st
+import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 
-sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from diagnostic_engine import classify, smooth
+from src import synthetic_generator, diagnostic_engine
+from src.wall_overlay import build_overlay_figure, classify_wall_vs_distance
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-TELEMETRY_URL = "http://localhost:5000/telemetry"
+TELEMETRY_URL = "http://localhost:5000/devices"
 TICKET_URL = "http://localhost:6000/ticket"
+
+COLORS = {
+    "Optimal": "#22c55e",
+    "Congestion": "#f59e0b",
+    "Far Distance": "#f59e0b",
+    "Attenuated Signal": "#ef4444",
+    "Hardware Limited": "#f59e0b",
+    "Device-Specific Issue": "#ef4444",
+    "Insufficient Information": "#94a3b8",
+}
 
 st.set_page_config(
     page_title="Wi-Fi Band Analyzer",
     page_icon="📶",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-
-# ============================================================
-# PROFESSIONAL DARK UI
-# ============================================================
-
+# ========================= STYLE =========================
 st.markdown("""
 <style>
-
-/* ---------- MAIN ---------- */
-
 .stApp {
     background:
-        radial-gradient(
-            circle at 85% 0%,
-            rgba(45, 91, 255, 0.13),
-            transparent 28%
-        ),
+        radial-gradient(circle at 85% 0%, rgba(45,91,255,.12), transparent 28%),
+        radial-gradient(circle at 10% 90%, rgba(0,180,255,.045), transparent 25%),
         #06111f;
     color: #f4f7fb;
 }
-
-[data-testid="stHeader"] {
-    background: rgba(6, 17, 31, 0.94);
-}
-
+[data-testid="stHeader"] { background: rgba(6,17,31,.92); }
 [data-testid="stSidebar"] {
-    background:
-        linear-gradient(
-            180deg,
-            #071625 0%,
-            #06111f 100%
-        );
+    background: linear-gradient(180deg,#071625 0%,#06111f 100%);
     border-right: 1px solid #19324b;
 }
-
 .block-container {
     max-width: 1480px;
-    padding: 1rem 1.7rem 2rem;
+    padding: 1.1rem 1.8rem 2.2rem;
 }
+h1,h2,h3,h4 { color:#f8fafc !important; }
+hr { border-color:#19324b !important; }
 
-h1, h2, h3, h4 {
-    color: #f8fafc !important;
+.brand-row {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:.75rem;
 }
-
-hr {
-    border-color: #19324b !important;
+.brand-left { display:flex; align-items:center; gap:12px; }
+.brand-icon {
+    width:46px;height:46px;border-radius:14px;
+    display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#1687ff,#5a35ff);
+    box-shadow:0 0 26px rgba(42,124,255,.28);
+    font-size:24px;
 }
-
-
-/* ---------- BRAND ---------- */
-
-.brand {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-}
-
-.brand-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.logo {
-    width: 48px;
-    height: 48px;
-    border-radius: 14px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    background:
-        linear-gradient(
-            135deg,
-            #1687ff,
-            #5a35ff
-        );
-
-    font-size: 25px;
-
-    box-shadow:
-        0 0 28px rgba(42, 124, 255, 0.25);
-}
-
-.title {
-    font-size: 1.5rem;
-    font-weight: 850;
-    line-height: 1.05;
-}
-
-.subtitle {
-    color: #8095ac;
-    font-size: 0.76rem;
-    margin-top: 4px;
-}
-
+.brand-title { font-size:1.45rem;font-weight:850;line-height:1.1; }
+.brand-sub { color:#8095ac;font-size:.76rem;margin-top:3px; }
 .live {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-
-    padding: 6px 12px;
-    border-radius: 999px;
-
-    color: #4ade80;
-    background: rgba(34, 197, 94, 0.08);
-    border: 1px solid rgba(34, 197, 94, 0.28);
-
-    font-size: 0.72rem;
-    font-weight: 800;
+    display:flex;align-items:center;gap:7px;
+    padding:6px 11px;border-radius:999px;
+    color:#4ade80;background:rgba(34,197,94,.08);
+    border:1px solid rgba(34,197,94,.28);
+    font-size:.73rem;font-weight:800;
 }
-
-.dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-
-    background: #22c55e;
-
-    box-shadow:
-        0 0 9px #22c55e;
-}
-
-
-/* ---------- HERO ---------- */
+.dot { width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 9px #22c55e; }
 
 .hero {
-    border: 1px solid #1b3855;
-    border-radius: 16px;
-
-    padding: 1rem 1.2rem;
-
+    border:1px solid #1b3855;border-radius:16px;
+    padding:1.05rem 1.25rem;
     background:
-        radial-gradient(
-            circle at 80% 50%,
-            rgba(64, 76, 255, 0.15),
-            transparent 34%
-        ),
-        linear-gradient(
-            135deg,
-            #0b1b31,
-            #091526
-        );
-
-    margin-bottom: 1rem;
+      radial-gradient(circle at 80% 50%,rgba(64,76,255,.16),transparent 34%),
+      linear-gradient(135deg,#0b1b31,#091526);
+    box-shadow:0 12px 35px rgba(0,0,0,.18);
+    margin-bottom:1rem;
 }
-
-.hero-title {
-    font-size: 1.45rem;
-    font-weight: 850;
-}
-
-.hero-sub {
-    color: #8ca0b7;
-    font-size: 0.78rem;
-    margin-top: 5px;
-}
-
-
-/* ---------- KPI CARDS ---------- */
+.hero-title { font-size:1.48rem;font-weight:850; }
+.hero-sub { color:#8ca0b7;font-size:.8rem;margin-top:4px; }
 
 .kpi {
-    min-height: 130px;
-
-    padding: 1rem;
-
-    border: 1px solid #1a3550;
-    border-radius: 15px;
-
-    background:
-        linear-gradient(
-            145deg,
-            #0b1b2f,
-            #091525
-        );
-
-    box-shadow:
-        0 9px 26px rgba(0, 0, 0, 0.15);
+    min-height:132px;padding:1rem;
+    border:1px solid #1a3550;border-radius:15px;
+    background:linear-gradient(145deg,#0b1b2f,#091525);
+    box-shadow:0 9px 26px rgba(0,0,0,.16);
 }
-
-.kpi.blue {
-    border-color: rgba(47, 140, 255, 0.36);
+.kpi.blue{border-color:rgba(47,140,255,.36)}
+.kpi.purple{border-color:rgba(139,92,246,.36)}
+.kpi.green{border-color:rgba(34,197,94,.30)}
+.kpi.amber{border-color:rgba(245,158,11,.34)}
+.kpi-icon {
+    width:36px;height:36px;border-radius:11px;
+    display:flex;align-items:center;justify-content:center;
+    font-weight:900;font-size:17px;margin-bottom:.55rem;
 }
-
-.kpi.purple {
-    border-color: rgba(139, 92, 246, 0.36);
-}
-
-.kpi.green {
-    border-color: rgba(34, 197, 94, 0.30);
-}
-
-.kpi.amber {
-    border-color: rgba(245, 158, 11, 0.34);
-}
-
-.ki {
-    width: 36px;
-    height: 36px;
-
-    border-radius: 11px;
-
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    font-weight: 900;
-
-    margin-bottom: 0.55rem;
-}
-
-.ib {
-    background: rgba(47, 140, 255, 0.13);
-    color: #60a5fa;
-}
-
-.ip {
-    background: rgba(139, 92, 246, 0.13);
-    color: #a78bfa;
-}
-
-.ig {
-    background: rgba(34, 197, 94, 0.12);
-    color: #4ade80;
-}
-
-.ia {
-    background: rgba(245, 158, 11, 0.12);
-    color: #fbbf24;
-}
-
-.kl {
-    color: #8297ae;
-    font-size: 0.66rem;
-    letter-spacing: 0.08em;
-    font-weight: 700;
-}
-
-.kv {
-    font-size: 1.6rem;
-    font-weight: 850;
-    margin-top: 4px;
-}
-
-.ks {
-    color: #6f859d;
-    font-size: 0.7rem;
-    margin-top: 4px;
-}
-
-
-/* ---------- CARDS ---------- */
+.ib{background:rgba(47,140,255,.13);color:#60a5fa}
+.ip{background:rgba(139,92,246,.13);color:#a78bfa}
+.ig{background:rgba(34,197,94,.12);color:#4ade80}
+.ia{background:rgba(245,158,11,.12);color:#fbbf24}
+.kpi-label{color:#8297ae;font-size:.67rem;letter-spacing:.08em;font-weight:700}
+.kpi-value{font-size:1.62rem;font-weight:850;margin-top:4px}
+.kpi-sub{color:#6f859d;font-size:.7rem;margin-top:4px}
 
 .card {
-    border: 1px solid #19334d;
-    border-radius: 15px;
-
-    background:
-        linear-gradient(
-            145deg,
-            #0b1b2d,
-            #081423
-        );
-
-    padding: 1rem 1.05rem;
-
-    margin-top: 1rem;
-
-    box-shadow:
-        0 10px 30px rgba(0, 0, 0, 0.12);
+    border:1px solid #19334d;border-radius:15px;
+    background:linear-gradient(145deg,#0b1b2d,#081423);
+    box-shadow:0 10px 30px rgba(0,0,0,.15);
+    padding:1rem 1.05rem;
+    margin-top:1rem;
 }
+.card-title{font-size:1rem;font-weight:850}
+.card-sub{color:#7e94ab;font-size:.72rem;margin-top:3px}
 
-.ct {
-    font-size: 1rem;
-    font-weight: 850;
+.status {
+    display:inline-block;padding:5px 9px;border-radius:8px;
+    font-size:.69rem;font-weight:850;border:1px solid;
+    white-space:nowrap;
 }
+.s-green{color:#4ade80;background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.28)}
+.s-amber{color:#fbbf24;background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.28)}
+.s-red{color:#f87171;background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.28)}
 
-.cs {
-    color: #7e94ab;
-    font-size: 0.72rem;
-    margin-top: 3px;
-}
-
-
-/* ---------- STATUS BADGES ---------- */
-
-.badge {
-    display: inline-block;
-
-    padding: 5px 9px;
-
-    border-radius: 8px;
-
-    font-size: 0.68rem;
-    font-weight: 850;
-
-    border: 1px solid;
-
-    white-space: nowrap;
-}
-
-.green {
-    color: #4ade80;
-    background: rgba(34, 197, 94, 0.08);
-    border-color: rgba(34, 197, 94, 0.28);
-}
-
-.amber {
-    color: #fbbf24;
-    background: rgba(245, 158, 11, 0.08);
-    border-color: rgba(245, 158, 11, 0.28);
-}
-
-.red {
-    color: #f87171;
-    background: rgba(239, 68, 68, 0.08);
-    border-color: rgba(239, 68, 68, 0.28);
-}
-
-.purple {
-    color: #c084fc;
-    background: rgba(168, 85, 247, 0.08);
-    border-color: rgba(168, 85, 247, 0.28);
-}
-
-.gray {
-    color: #cbd5e1;
-    background: rgba(148, 163, 184, 0.08);
-    border-color: rgba(148, 163, 184, 0.28);
-}
-
-
-/* ---------- DEVICE ---------- */
-
-.device-head {
-    font-size: 0.84rem;
-    font-weight: 850;
-}
-
-.meta {
-    font-size: 0.68rem;
-    color: #71879f;
-    margin-top: 3px;
-}
-
-.fl {
-    font-size: 0.59rem;
-    color: #6f859c;
-    letter-spacing: 0.07em;
-    font-weight: 700;
-}
-
-.fv {
-    font-size: 0.82rem;
-    color: #eef3f8;
-    font-weight: 800;
-    margin-top: 2px;
-}
-
-
-/* ---------- INSIGHTS ---------- */
+.device-name{font-size:.83rem;font-weight:850;color:#f5f8fc}
+.device-meta{font-size:.69rem;color:#71879f;margin-top:3px}
+.field-label{font-size:.61rem;color:#6f859c;letter-spacing:.07em;font-weight:700}
+.field-value{font-size:.84rem;color:#eef3f8;font-weight:800;margin-top:2px}
 
 .insight {
-    border: 1px solid #19344f;
-    border-radius: 11px;
-
-    background: #0a1829;
-
-    padding: 0.65rem 0.72rem;
-
-    margin: 0.45rem 0;
+    border:1px solid #19344f;border-radius:11px;
+    background:#0a1829;padding:.68rem .75rem;margin:.48rem 0;
 }
+.insight-title{font-size:.75rem;font-weight:800}
+.insight-text{font-size:.68rem;color:#7d92aa;margin-top:3px}
 
-.it {
-    font-size: 0.74rem;
-    font-weight: 800;
+.sidebar-brand{padding:.35rem .25rem 1rem;border-bottom:1px solid #183149}
+.sidebar-title{font-size:1.03rem;font-weight:850;color:#fff}
+.sidebar-sub{font-size:.68rem;color:#70869e;margin-top:3px}
+.nav-item{padding:.55rem .2rem;color:#b8c7d8;font-size:.84rem}
+.nav-active{
+    padding:.6rem .75rem;border-radius:9px;
+    background:linear-gradient(90deg,#0c67d9,#1454a5);
+    color:#fff;font-weight:800;
+    box-shadow:0 6px 18px rgba(20,84,165,.2);
 }
-
-.ix {
-    font-size: 0.67rem;
-    color: #7d92aa;
-    margin-top: 3px;
+.mode-box{
+    margin-top:.7rem;padding:.75rem;border:1px solid #19344e;
+    border-radius:11px;background:#091828;
 }
-
-
-/* ---------- SIDEBAR ---------- */
-
-.sidebar-title {
-    font-size: 1.02rem;
-    font-weight: 850;
-}
-
-.sidebar-sub {
-    font-size: 0.68rem;
-    color: #70869e;
-    margin-top: 3px;
-}
-
-.nav-active {
-    padding: 0.6rem 0.75rem;
-
-    border-radius: 9px;
-
-    background:
-        linear-gradient(
-            90deg,
-            #0c67d9,
-            #1454a5
-        );
-
-    font-weight: 800;
-}
-
-.nav-item {
-    padding: 0.55rem 0.2rem;
-
-    color: #b8c7d8;
-
-    font-size: 0.84rem;
-}
-
-.mode {
-    margin-top: 0.8rem;
-
-    padding: 0.75rem;
-
-    border: 1px solid #19344e;
-
-    border-radius: 11px;
-
-    background: #091828;
-}
-
-.muted {
-    color: #71879f;
-    font-size: 0.68rem;
-}
-
+.muted{color:#71879f;font-size:.68rem}
+.footer{text-align:center;color:#4d647b;font-size:.65rem;margin-top:1.4rem}
 </style>
 """, unsafe_allow_html=True)
 
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
+# ========================= SIDEBAR =========================
 with st.sidebar:
-
     st.markdown("""
-    <div style="
-        padding:.35rem .25rem 1rem;
-        border-bottom:1px solid #183149;
-    ">
-        <div style="font-size:28px;">📶</div>
-
-        <div class="sidebar-title">
-            Wi-Fi Band Analyzer
-        </div>
-
-        <div class="sidebar-sub">
-            Network Insights · Better Connections
-        </div>
+    <div class="sidebar-brand">
+      <div style="font-size:28px;margin-bottom:5px;">📶</div>
+      <div class="sidebar-title">Wi-Fi Band Analyzer</div>
+      <div class="sidebar-sub">Network Insights · Better Connections</div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("### Navigation")
-
-    st.markdown(
-        '<div class="nav-active">⌂ &nbsp; Dashboard</div>',
-        unsafe_allow_html=True
-    )
-
-    for item in [
-        "▣  Devices",
-        "◉  Network",
-        "⌁  Diagnostics",
-        "⚙  Settings"
-    ]:
-        st.markdown(
-            f'<div class="nav-item">{item}</div>',
-            unsafe_allow_html=True
-        )
+    st.markdown('<div class="nav-active">⌂ &nbsp; Dashboard</div>', unsafe_allow_html=True)
+    for item in ["▣  Devices", "◉  Network", "⌁  Diagnostics", "⚙  Settings"]:
+        st.markdown(f'<div class="nav-item">{item}</div>', unsafe_allow_html=True)
 
     st.markdown("---")
-
-    auto_refresh = st.checkbox(
-        "Auto-refresh (3s)",
-        value=True
-    )
+    auto_refresh = st.checkbox("Auto-refresh (3s)", value=False)
 
     st.markdown("""
-    <div class="mode">
-
-        <div class="muted">
-            DATA SOURCE
-        </div>
-
-        <div style="font-weight:850;margin-top:4px;">
-            Linux Wi-Fi Telemetry
-        </div>
-
-        <div class="muted" style="margin-top:4px;">
-            localhost:5000
-        </div>
-
+    <div class="mode-box">
+      <div class="muted">ANALYSIS MODE</div>
+      <div style="font-weight:850;margin-top:4px;">Synthetic & Integrated</div>
+      <div class="muted" style="margin-top:4px;">Connected to Flask Backend</div>
     </div>
+    <div class="footer">Wi-Fi Band Analyzer<br>v1.0.0</div>
     """, unsafe_allow_html=True)
 
-
-# ============================================================
-# REAL TELEMETRY
-# ============================================================
-
-def get_devices():
-
+# ========================= DATA FETCHERS =========================
+def fetch_live_devices():
     try:
+        r = requests.get(TELEMETRY_URL, timeout=1.5)
+        if r.status_code == 200:
+            return r.json(), "live"
+    except requests.exceptions.RequestException:
+        pass
+    return None, None
 
-        response = requests.get(
-            TELEMETRY_URL,
-            timeout=2
-        )
+def fetch_synthetic_devices():
+    raw = [synthetic_generator.generate_device(f"dev{i}", profile) for i, profile in enumerate(synthetic_generator.DEVICE_PROFILES.keys())]
+    smoothed = [diagnostic_engine.smooth(d) for d in raw]
+    for d in smoothed:
+        diagnosis, reason = diagnostic_engine.classify(d, smoothed)
+        d["diagnosis"] = diagnosis
+        d["reason"] = reason
+    return smoothed
 
-        response.raise_for_status()
+def fetch_devices():
+    live, source = fetch_live_devices()
+    if live:
+        return live, source
+    return fetch_synthetic_devices(), "synthetic (fallback)"
 
-        data = response.json()
-
-        # Flask server returns latest_data directly.
-        if isinstance(data, dict):
-
-            # Also support wrapped responses.
-            if isinstance(data.get("devices"), list):
-                data = data["devices"]
-
-            elif isinstance(data.get("data"), list):
-                data = data["data"]
-
-            elif isinstance(data.get("telemetry"), list):
-                data = data["telemetry"]
-
-            else:
-                data = [data]
-
-        if not isinstance(data, list):
-            return [], "Invalid telemetry format"
-
-        devices = []
-
-        for i, item in enumerate(data):
-
-            if not isinstance(item, dict):
-                continue
-
-            d = dict(item)
-
-            # ------------------------------------------------
-            # Accept several possible field names
-            # ------------------------------------------------
-
-            d.setdefault(
-                "device_id",
-                d.get(
-                    "mac",
-                    d.get(
-                        "station",
-                        f"device_{i + 1}"
-                    )
-                )
-            )
-
-            d.setdefault(
-                "band",
-                d.get(
-                    "wifi_band",
-                    "Unknown"
-                )
-            )
-
-            d.setdefault(
-                "standard",
-                d.get(
-                    "wifi_standard",
-                    "Unknown"
-                )
-            )
-
-            d.setdefault(
-                "rssi",
-                d.get(
-                    "rssi_dbm",
-                    d.get(
-                        "signal",
-                        -100
-                    )
-                )
-            )
-
-            d.setdefault(
-                "snr",
-                d.get(
-                    "snr_db",
-                    0
-                )
-            )
-
-            d.setdefault(
-                "retry_rate",
-                d.get(
-                    "retries",
-                    d.get(
-                        "retry",
-                        0
-                    )
-                )
-            )
-
-            # ------------------------------------------------
-            # Convert numeric values safely
-            # ------------------------------------------------
-
-            try:
-                d["rssi"] = float(d["rssi"])
-            except Exception:
-                d["rssi"] = -100.0
-
-            try:
-                d["snr"] = float(d["snr"])
-            except Exception:
-                d["snr"] = 0.0
-
-            try:
-                d["retry_rate"] = float(
-                    d["retry_rate"]
-                )
-            except Exception:
-                d["retry_rate"] = 0.0
-
-            d["source"] = "live"
-
-            devices.append(d)
-
-        return devices, "live"
-
-    except requests.exceptions.ConnectionError:
-
-        return [], "Telemetry server unavailable"
-
-    except requests.exceptions.Timeout:
-
-        return [], "Telemetry server timeout"
-
-    except Exception as e:
-
-        return [], f"Telemetry error: {e}"
-
-
-# ============================================================
-# DIAGNOSTIC COLORS
-# ============================================================
-
-COLOR_MAP = {
-
-    "Optimal":
-        ("✓", "green"),
-
-    "Hardware Limited":
-        ("▣", "amber"),
-
-    "Far Distance":
-        ("↗", "amber"),
-
-    "Attenuated Signal":
-        ("!", "red"),
-
-    "Congestion":
-        ("⚠", "purple"),
-
-    "Device-Specific Issue":
-        ("!", "red"),
-
-    "Insufficient Information":
-        ("?", "gray"),
-}
-
-
-# ============================================================
-# DISTANCE ESTIMATION
-# ============================================================
-
-def distance_from_rssi(rssi):
-
+def fetch_ticket_status():
     try:
+        r = requests.get("http://localhost:6000/tickets", timeout=1.0)
+        if r.status_code == 200:
+            return r.json()
+    except requests.exceptions.RequestException:
+        pass
+    return []
 
-        tx_power = -30
-        path_loss_exponent = 3.0
+devices, source = fetch_devices()
+tickets = fetch_ticket_status()
 
-        distance = 10 ** (
-            (tx_power - float(rssi))
-            /
-            (10 * path_loss_exponent)
-        )
-
-        return round(
-            max(0.1, distance),
-            2
-        )
-
-    except Exception:
-
-        return 0.0
-
-
-# ============================================================
-# GET LIVE DATA
-# ============================================================
-
-devices, source = get_devices()
-
-
-# ============================================================
-# HEADER
-# ============================================================
-
-source_text = (
-    "LIVE Wi-Fi telemetry"
-    if source == "live"
-    else source
-)
-
+# ========================= HEADER =========================
 st.markdown(f"""
-
-<div class="brand">
-
-    <div class="brand-left">
-
-        <div class="logo">
-            📶
-        </div>
-
-        <div>
-
-            <div class="title">
-                Wi-Fi Band Analyzer
-            </div>
-
-            <div class="subtitle">
-                Live network diagnostics & optimization
-            </div>
-
-        </div>
-
+<div class="brand-row">
+  <div class="brand-left">
+    <div class="brand-icon">📶</div>
+    <div>
+      <div class="brand-title">Wi-Fi Band Analyzer</div>
+      <div class="brand-sub">Live network diagnostics & optimization</div>
     </div>
-
-    <div class="live">
-        <span class="dot"></span>
-        LIVE
-    </div>
-
+  </div>
+  <div class="live"><span class="dot"></span> Live</div>
 </div>
-
 
 <div class="hero">
-
-    <div class="hero-title">
-        Wi-Fi Band Analyzer — Live Dashboard
-    </div>
-
-    <div class="hero-sub">
-
-        Data source:
-        <b>{source_text}</b>
-
-        &nbsp;·&nbsp;
-
-        {len(devices)} device(s)
-
-        &nbsp;·&nbsp;
-
-        {time.strftime("%H:%M:%S")}
-
-    </div>
-
+  <div class="hero-title">Wi-Fi Band Analyzer — Live Dashboard</div>
+  <div class="hero-sub">Data source: <b>{source}</b> &nbsp;·&nbsp; {len(devices)} device(s) &nbsp;·&nbsp; {time.strftime('%H:%M:%S')}</div>
 </div>
-
 """, unsafe_allow_html=True)
 
-
-# ============================================================
-# NO DATA
-# ============================================================
-
-if not devices:
-
-    st.error(
-        "No telemetry data received from "
-        "http://localhost:5000/telemetry"
-    )
-
-    st.info(
-        "Make sure your friend's "
-        "telemetry_server.py and Wi-Fi poller "
-        "are running."
-    )
-
-    if auto_refresh:
-
-        time.sleep(3)
-        st.rerun()
-
-    st.stop()
-
-
-# ============================================================
-# RUN DIAGNOSTIC ENGINE
-# ============================================================
-
-for device in devices:
-
-    try:
-
-        smooth(device)
-
-    except Exception:
-
-        pass
-
-
-for device in devices:
-
-    try:
-
-        result = classify(
-            device,
-            network_devices=devices
-        )
-
-        # Support both:
-        #
-        # label, reason
-        #
-        # and:
-        #
-        # label, reason, confidence
-
-        if len(result) >= 2:
-
-            label = result[0]
-            reason = result[1]
-
-        else:
-
-            label = "Insufficient Information"
-            reason = (
-                "Diagnostic engine returned "
-                "insufficient information."
-            )
-
-    except Exception as e:
-
-        label = "Insufficient Information"
-
-        reason = (
-            f"Diagnostic engine error: {e}"
-        )
-
-    device["diagnosis_label"] = label
-    device["reason"] = reason
-
-
-# ============================================================
-# KPI CALCULATIONS
-# ============================================================
-
-avg_rssi = sum(
-    d["rssi"]
-    for d in devices
-) / len(devices)
-
-avg_snr = sum(
-    d["snr"]
-    for d in devices
-) / len(devices)
-
-issues = sum(
-    d["diagnosis_label"] != "Optimal"
-    for d in devices
-)
-
-optimal = len(devices) - issues
-
-
-# ============================================================
-# KPI CARDS
-# ============================================================
-
-kpis = [
-
-    (
-        "blue",
-        "ib",
-        "▣",
-        "DEVICES ONLINE",
-        str(len(devices)),
-        f"/ {len(devices)} connected"
-    ),
-
-    (
-        "purple",
-        "ip",
-        "◉",
-        "AVG RSSI",
-        f"{avg_rssi:.1f} dBm",
-        "Signal strength"
-    ),
-
-    (
-        "green",
-        "ig",
-        "⌁",
-        "AVG SNR",
-        f"{avg_snr:.1f} dB",
-        "Signal quality"
-    ),
-
-    (
-        "amber",
-        "ia",
-        "!",
-        "ATTENTION REQUIRED",
-        str(issues),
-        "Non-optimal devices"
-    )
-
-]
-
-
-cols = st.columns(4)
-
-
-for col, item in zip(cols, kpis):
-
-    kind, icon_class, icon, label, value, sub = item
-
-    with col:
-
-        st.markdown(f"""
-
-        <div class="kpi {kind}">
-
-            <div class="ki {icon_class}">
-                {icon}
-            </div>
-
-            <div class="kl">
-                {label}
-            </div>
-
-            <div class="kv">
-                {value}
-            </div>
-
-            <div class="ks">
-                {sub}
-            </div>
-
-        </div>
-
-        """, unsafe_allow_html=True)
-
-
-# ============================================================
-# NETWORK QUALITY SCORES
-# ============================================================
-
-score_map = {
-
-    "Optimal": 0.92,
-
-    "Hardware Limited": 0.70,
-
-    "Far Distance": 0.56,
-
-    "Attenuated Signal": 0.42,
-
-    "Congestion": 0.62,
-
-    "Device-Specific Issue": 0.48,
-
-    "Insufficient Information": 0.30
-
-}
-
-
-chart_colors = {
-
-    "Optimal": "#22c55e",
-
-    "Hardware Limited": "#f59e0b",
-
-    "Far Distance": "#f59e0b",
-
-    "Attenuated Signal": "#ef4444",
-
-    "Congestion": "#a855f7",
-
-    "Device-Specific Issue": "#ef4444",
-
-    "Insufficient Information": "#94a3b8"
-
-}
-
-
-active_labels = []
-
-
-for label in score_map:
-
-    if any(
-        d["diagnosis_label"] == label
-        for d in devices
-    ):
-
-        active_labels.append(label)
-
-
-fig = go.Figure()
-
-
-for label in active_labels:
-
-    score = score_map[label]
-
-    fig.add_trace(
-
-        go.Bar(
-
-            x=[label],
-
-            y=[score],
-
-            marker_color=chart_colors[label],
-
-            text=[f"{score:.2f}"],
-
-            textposition="outside",
-
-            textfont=dict(
-                color="#cbd8e6",
-                size=10
-            ),
-
-            hovertemplate=(
-                f"<b>{label}</b>"
-                f"<br>Quality score: {score:.2f}"
-                f"<extra></extra>"
-            ),
-
-            showlegend=False
-
-        )
-
-    )
-
-
-fig.update_layout(
-
-    height=285,
-
-    margin=dict(
-        l=5,
-        r=5,
-        t=15,
-        b=55
-    ),
-
-    paper_bgcolor="rgba(0,0,0,0)",
-
-    plot_bgcolor="rgba(0,0,0,0)",
-
-    font=dict(
-        color="#91a4b9"
-    ),
-
-    yaxis=dict(
-        range=[0, 1.08],
-
-        gridcolor=(
-            "rgba(120,150,185,.11)"
-        ),
-
-        zeroline=False,
-
-        title="Quality score"
-    ),
-
-    xaxis=dict(
-        tickfont=dict(
-            size=9
-        )
-    )
-
-)
-
-
-# ============================================================
-# CHART + INSIGHTS
-# ============================================================
-
-left, right = st.columns(
-    [1.65, 1]
-)
-
-
-with left:
-
-    st.markdown("""
-
-    <div class="card">
-
-        <div class="ct">
-            Network Channel & Band Quality
-        </div>
-
-        <div class="cs">
-            Current conditions from real
-            Linux Wi-Fi telemetry
-        </div>
-
-    """, unsafe_allow_html=True)
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config={
-            "displayModeBar": False
-        }
-    )
-
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-
-with right:
-
-    st.markdown("""
-
-    <div class="card">
-
-        <div class="ct">
-            Quick Insights
-        </div>
-
-        <div class="cs">
-            Automatically generated
-            from live telemetry
-        </div>
-
-    """, unsafe_allow_html=True)
-
-
-    if optimal > 0:
-
-        st.markdown(f"""
-
-        <div class="insight">
-
-            <div class="it">
-                🟢 {optimal} device(s) optimal
-            </div>
-
-            <div class="ix">
-                Healthy connection conditions detected.
-            </div>
-
-        </div>
-
-        """, unsafe_allow_html=True)
-
-
-    if issues > 0:
-
-        st.markdown(f"""
-
-        <div class="insight">
-
-            <div class="it">
-                🟠 {issues} device(s) need attention
-            </div>
-
-            <div class="ix">
-                Open device analysis
-                for the recommended action.
-            </div>
-
-        </div>
-
-        """, unsafe_allow_html=True)
-
-
-    weak = sum(
-
-        d["diagnosis_label"]
-        in (
-            "Attenuated Signal",
-            "Far Distance"
-        )
-
-        for d in devices
-
-    )
-
-
-    if weak > 0:
-
-        st.markdown(f"""
-
-        <div class="insight">
-
-            <div class="it">
-                🔴 {weak} weak-coverage case(s)
-            </div>
-
-            <div class="ix">
-                Check distance, walls
-                and AP placement.
-            </div>
-
-        </div>
-
-        """, unsafe_allow_html=True)
-
-
-    st.markdown(f"""
-
-    <div class="insight">
-
-        <div class="it">
-            📡 Live source connected
-        </div>
-
-        <div class="ix">
-            {len(devices)}
-            device(s) received from
-            localhost:5000.
-        </div>
-
-    </div>
-
-    </div>
-
-    """, unsafe_allow_html=True)
-
-
-# ============================================================
-# CONNECTED DEVICES
-# ============================================================
-
-st.markdown("""
-
-<div class="card">
-
-    <div class="ct">
-        Connected Devices
-    </div>
-
-    <div class="cs">
-        Real device telemetry · diagnosis ·
-        signal quality · estimated distance
-    </div>
-
-</div>
-
-""", unsafe_allow_html=True)
-
-
-for device in devices:
-
-    label = device["diagnosis_label"]
-
-    icon, badge_class = COLOR_MAP.get(
-        label,
-        ("?", "gray")
-    )
-
-    distance = distance_from_rssi(
-        device["rssi"]
-    )
-
-
-    with st.container(border=True):
-
-        c1, c2, c3, c4, c5, c6 = st.columns(
-            [1.45, 1.45, .95, .95, 1.0, 1.45]
-        )
-
-
-        with c1:
-
-            st.markdown(
-
-                f"""
-                <div class="device-head">
-                    {device.get("device_id", "unknown")}
-                </div>
-
-                <div class="meta">
-                    {device.get("band", "Unknown")}
-                    ·
-                    {device.get("standard", "Unknown")}
-                </div>
-                """,
-
-                unsafe_allow_html=True
-            )
-
-
-        with c2:
-
-            st.markdown(
-
-                f"""
-                <span class="badge {badge_class}">
-                    {icon} {label}
-                </span>
-                """,
-
-                unsafe_allow_html=True
-            )
-
-
-        with c3:
-
-            st.markdown(
-
-                f"""
-                <div class="fl">
-                    RSSI
-                </div>
-
-                <div class="fv">
-                    {device["rssi"]:.1f} dBm
-                </div>
-                """,
-
-                unsafe_allow_html=True
-            )
-
-
-        with c4:
-
-            st.markdown(
-
-                f"""
-                <div class="fl">
-                    SNR
-                </div>
-
-                <div class="fv">
-                    {device["snr"]:.1f} dB
-                </div>
-                """,
-
-                unsafe_allow_html=True
-            )
-
-
-        with c5:
-
-            st.markdown(
-
-                f"""
-                <div class="fl">
-                    RETRY
-                </div>
-
-                <div class="fv">
-                    {device["retry_rate"]:.2f}%
-                </div>
-                """,
-
-                unsafe_allow_html=True
-            )
-
-
-        with c6:
-
-            st.markdown(
-
-                f"""
-                <div class="fl">
-                    EST. DISTANCE
-                </div>
-
-                <div class="fv">
-                    ~{distance} m
-                </div>
-                """,
-
-                unsafe_allow_html=True
-            )
-
-
-        # ----------------------------------------------------
-        # DEVICE DETAILS
-        # ----------------------------------------------------
-
-        with st.expander(
-            f"Analysis & recommendation — "
-            f"{device.get('device_id', 'unknown')}"
-        ):
-
-            st.markdown(
-                f"**Diagnosis:** {label}"
-            )
-
-            st.markdown(
-                f"**Reason:** {device['reason']}"
-            )
-
-
-            if label == "Optimal":
-
-                st.success(
-                    "Recommendation: "
-                    "No immediate action required."
-                )
-
-
-            elif label == "Attenuated Signal":
-
-                st.error(
-                    "Recommendation: "
-                    "Check walls, obstructions "
-                    "and AP placement."
-                )
-
-
-            elif label == "Far Distance":
-
-                st.warning(
-                    "Recommendation: "
-                    "Move closer to the AP "
-                    "or improve coverage."
-                )
-
-
-            elif label == "Hardware Limited":
-
-                st.warning(
-                    "Recommendation: "
-                    "Check the client's "
-                    "Wi-Fi hardware capability."
-                )
-
-
-            elif label == "Congestion":
-
-                st.warning(
-                    "Recommendation: "
-                    "Investigate channel utilization "
-                    "and band selection."
-                )
-
-
-            else:
-
-                st.info(
-                    "Recommendation: "
-                    "Collect more telemetry "
-                    "before making a network change."
-                )
-
-
-            st.caption(
-
-                f"Raw RSSI: "
-                f"{device.get('rssi_raw', device.get('rssi'))} dBm"
-                f" · Smoothed RSSI: "
-                f"{device.get('rssi')} dBm"
-                f" · Retry rate: "
-                f"{device.get('retry_rate')}%"
-                f" · Band: "
-                f"{device.get('band', 'n/a')}"
-                f" · Standard: "
-                f"{device.get('standard', 'n/a')}"
-
-            )
-
-
-            # ------------------------------------------------
-            # TICKET BUTTON
-            # ------------------------------------------------
-
-            if label != "Optimal":
-
-                ticket_key = (
-                    "ticket_"
-                    + str(device.get("device_id"))
-                )
-
-                if st.button(
-                    f"🎫 File Ticket for "
-                    f"{device.get('device_id')}",
-                    key=ticket_key
-                ):
-
-                    payload = {
-
-                        "device_id":
-                            device.get(
-                                "device_id"
-                            ),
-
-                        "issue":
-                            label,
-
-                        "reason":
-                            device.get(
-                                "reason",
-                                ""
-                            )
-
-                    }
-
-                    try:
-
-                        response = requests.post(
-                            TICKET_URL,
-                            json=payload,
-                            timeout=3
-                        )
-
-
-                        if response.status_code == 200:
-
-                            result = response.json()
-
-                            st.success(
-
-                                "Ticket filed successfully! "
-                                f"ID: "
-                                f"{result.get('ticket_id', 'N/A')} "
-                                f"· Status: "
-                                f"{result.get('status', 'created')}"
-
-                            )
-
-                        else:
-
-                            st.error(
-                                "Ticket backend returned "
-                                f"HTTP {response.status_code}"
-                            )
-
-
-                    except Exception as e:
-
-                        st.error(
-                            f"Ticket server connection error: {e}"
-                        )
-
-
-# ============================================================
-# WALL / DISTANCE OVERLAY
-# ============================================================
-
-st.markdown("""
-
-<div class="card">
-
-    <div class="ct">
-        Wall / Distance Overlay
-    </div>
-
-    <div class="cs">
-        RSSI-derived implied position ·
-        router at center ·
-        rings show increasing distance
-    </div>
-
-""", unsafe_allow_html=True)
-
-
-map_fig = go.Figure()
-
-
-# ------------------------------------------------------------
-# DISTANCE RINGS
-# ------------------------------------------------------------
-
-for radius in [2, 5, 10, 15]:
-
-    theta = [
-
-        i / 120 * 2 * math.pi
-
-        for i in range(121)
-
+# ========================= KPI =========================
+if devices:
+    avg_rssi = sum(float(d["rssi"]) for d in devices) / len(devices)
+    avg_snr = sum(float(d["snr"]) for d in devices) / len(devices)
+    issues = sum(d.get("diagnosis") != "Optimal" for d in devices)
+
+    kpis = [
+        ("blue","ib","▣","DEVICES ONLINE",str(len(devices)),f"/ {len(devices)} connected"),
+        ("purple","ip","◉","AVG RSSI",f"{avg_rssi:.1f} dBm","Signal strength"),
+        ("green","ig","⌁","AVG SNR",f"{avg_snr:.1f} dB","Signal quality"),
+        ("amber","ia","!","DEVICES WITH ISSUES",str(issues),"Needs attention"),
     ]
-
-    x = [
-        radius * math.cos(a)
-        for a in theta
-    ]
-
-    y = [
-        radius * math.sin(a)
-        for a in theta
-    ]
-
-
-    map_fig.add_trace(
-
-        go.Scatter(
-
-            x=x,
-            y=y,
-
-            mode="lines",
-
-            line=dict(
-                color="rgba(100,145,185,.20)",
-                dash="dot",
-                width=1
-            ),
-
-            hoverinfo="skip",
-
-            showlegend=False
-
-        )
-
-    )
-
-
-# ------------------------------------------------------------
-# ROUTER
-# ------------------------------------------------------------
-
-map_fig.add_trace(
-
-    go.Scatter(
-
-        x=[0],
-        y=[0],
-
-        mode="markers+text",
-
-        text=["★ Router"],
-
-        textposition="top center",
-
-        marker=dict(
-
-            size=22,
-
-            symbol="star",
-
-            color="#22c55e",
-
-            line=dict(
-                color="#e8fff0",
-                width=2
-            )
-
-        ),
-
-        textfont=dict(
-            size=11,
-            color="#f1f6fb"
-        ),
-
-        hovertemplate=(
-            "<b>Router / Access Point</b>"
-            "<extra></extra>"
-        ),
-
-        showlegend=False
-
-    )
-
-)
-
-
-# ------------------------------------------------------------
-# DEVICES ON MAP
-# ------------------------------------------------------------
-
-number_devices = max(
-    len(devices),
-    1
-)
-
-
-map_color = {
-
-    "Optimal": "#22c55e",
-
-    "Hardware Limited": "#f59e0b",
-
-    "Far Distance": "#f59e0b",
-
-    "Attenuated Signal": "#ef4444",
-
-    "Congestion": "#a855f7",
-
-    "Device-Specific Issue": "#ef4444",
-
-    "Insufficient Information": "#94a3b8"
-
-}
-
-
-for index, device in enumerate(devices):
-
-    distance = distance_from_rssi(
-        device["rssi"]
-    )
-
-
-    angle = (
-
-        (2 * math.pi / number_devices)
-        * index
-
-        + math.pi / 8
-
-    )
-
-
-    x = distance * math.cos(angle)
-
-    y = distance * math.sin(angle)
-
-
-    color = map_color.get(
-
-        device["diagnosis_label"],
-
-        "#94a3b8"
-
-    )
-
-
-    # Connector
-
-    map_fig.add_trace(
-
-        go.Scatter(
-
-            x=[0, x],
-            y=[0, y],
-
-            mode="lines",
-
-            line=dict(
-
-                color="rgba(120,155,190,.10)",
-
-                width=1
-
-            ),
-
-            hoverinfo="skip",
-
-            showlegend=False
-
-        )
-
-    )
-
-
-    # Device
-
-    map_fig.add_trace(
-
-        go.Scatter(
-
-            x=[x],
-            y=[y],
-
-            mode="markers+text",
-
-            text=[
-                device.get(
-                    "device_id",
-                    "device"
-                )
-            ],
-
-            textposition="bottom center",
-
-            marker=dict(
-
-                size=15,
-
-                color=color,
-
-                line=dict(
-                    color="#edf5ff",
-                    width=1.3
-                )
-
-            ),
-
-            textfont=dict(
-
-                size=10,
-
-                color="#dce7f2"
-
-            ),
-
-            hovertemplate=(
-
-                f"<b>"
-                f"{device.get('device_id', 'device')}"
-                f"</b>"
-
-                f"<br>RSSI: "
-                f"{device['rssi']:.1f} dBm"
-
-                f"<br>SNR: "
-                f"{device['snr']:.1f} dB"
-
-                f"<br>Retry: "
-                f"{device['retry_rate']:.2f}%"
-
-                f"<br>Estimated distance: "
-                f"{distance} m"
-
-                f"<br>Diagnosis: "
-                f"{device['diagnosis_label']}"
-
-                "<extra></extra>"
-
-            ),
-
-            showlegend=False
-
-        )
-
-    )
-
-
-map_fig.update_layout(
-
-    height=430,
-
-    margin=dict(
-        l=10,
-        r=10,
-        t=10,
-        b=10
-    ),
-
-    paper_bgcolor="rgba(0,0,0,0)",
-
-    plot_bgcolor="rgba(0,0,0,0)",
-
-    xaxis=dict(
-        visible=False,
-        scaleanchor="y",
-        scaleratio=1
-    ),
-
-    yaxis=dict(
-        visible=False
-    ),
-
-    hoverlabel=dict(
-
-        bgcolor="#0b1829",
-
-        bordercolor="#294764",
-
-        font=dict(
-            color="#fff"
-        )
-
-    )
-
-)
-
-
-st.plotly_chart(
-
-    map_fig,
-
-    use_container_width=True,
-
-    config={
-        "displayModeBar": False
+    cols = st.columns(4)
+    for c, (kind, icon_kind, icon, label, value, sub) in zip(cols, kpis):
+        with c:
+            st.markdown(f"""
+            <div class="kpi {kind}">
+              <div class="kpi-icon {icon_kind}">{icon}</div>
+              <div class="kpi-label">{label}</div>
+              <div class="kpi-value">{value}</div>
+              <div class="kpi-sub">{sub}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ========================= QUALITY + INSIGHTS =========================
+    order = ["Attenuated Signal","Congestion","Far Distance","Hardware Limited","Optimal"]
+    scores = {
+        "Attenuated Signal": 0.42,
+        "Congestion": 0.62,
+        "Far Distance": 0.56,
+        "Hardware Limited": 0.70,
+        "Optimal": 0.92,
     }
+    score_labels = {k: f"{scores[k]:.2f}" for k in order}
 
-)
+    fig = go.Figure()
+    for name in order:
+        fig.add_trace(go.Bar(
+            x=[name],
+            y=[scores[name]],
+            marker=dict(color=COLORS.get(name, "#94a3b8"), line=dict(width=0)),
+            text=[score_labels[name]],
+            textposition="outside",
+            textfont=dict(color="#cbd8e6", size=10),
+            hovertemplate=f"<b>{name}</b><br>Quality score: {scores[name]:.2f}<extra></extra>",
+            showlegend=False
+        ))
+    fig.update_layout(
+        height=285,
+        margin=dict(l=5,r=5,t=15,b=50),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#91a4b9"),
+        yaxis=dict(range=[0,1.08],gridcolor="rgba(120,150,185,.11)",zeroline=False,title="Quality score"),
+        xaxis=dict(tickfont=dict(size=10)),
+        showlegend=False,
+    )
 
-st.markdown(
-    "</div>",
-    unsafe_allow_html=True
-)
+    left, right = st.columns([1.65, 1])
+    with left:
+        st.markdown("""
+        <div class="card">
+          <div class="card-title">Network Channel & Band Quality</div>
+          <div class="card-sub">Current network conditions across key performance indicators</div>
+        """, unsafe_allow_html=True)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False})
+        st.markdown("</div>", unsafe_allow_html=True)
 
+    optimal = int(sum(d.get("diagnosis") == "Optimal" for d in devices))
+    poor = int(sum(d.get("diagnosis") in ("Attenuated Signal","Far Distance") for d in devices))
+    congestion = int(sum(d.get("diagnosis") == "Congestion" for d in devices))
 
-# ============================================================
-# FOOTER
-# ============================================================
+    with right:
+        st.markdown("""
+        <div class="card">
+          <div class="card-title">Quick Insights</div>
+          <div class="card-sub">Automatically generated from current telemetry</div>
+        """, unsafe_allow_html=True)
 
-st.markdown(
-    """
-    <div style="
-        text-align:center;
-        color:#4d647b;
-        font-size:.65rem;
-        margin-top:1.2rem;
-    ">
-        Wi-Fi Band Analyzer ·
-        Real Linux telemetry ·
-        Diagnostic intelligence
+        if optimal >= len(devices)/2:
+            title, text = "🟢 Good overall network health", f"{optimal} of {len(devices)} devices are currently optimal."
+        else:
+            title, text = "🟠 Network needs attention", f"{optimal} of {len(devices)} devices are currently optimal."
+        st.markdown(f'<div class="insight"><div class="insight-title">{title}</div><div class="insight-text">{text}</div></div>', unsafe_allow_html=True)
+
+        if poor:
+            st.markdown(f'<div class="insight"><div class="insight-title">🔴 {poor} device(s) have weak signal</div><div class="insight-text">Check distance, walls and router placement.</div></div>', unsafe_allow_html=True)
+
+        if congestion:
+            st.markdown(f'<div class="insight"><div class="insight-title">🟠 Channel optimization recommended</div><div class="insight-text">{congestion} device(s) show congestion symptoms.</div></div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="insight"><div class="insight-title">🔵 Signal varies by location</div><div class="insight-text">RSSI-based distance and wall attenuation are included.</div></div></div>', unsafe_allow_html=True)
+
+    # ========================= DEVICES WITH TICKETING =========================
+    st.markdown("""
+    <div class="card">
+      <div class="card-title">Connected Devices & Ticketing Integration</div>
+      <div class="card-sub">Live device-level diagnosis, signal quality, and backend ticket generation</div>
     </div>
-    """,
-    unsafe_allow_html=True
-)
+    """, unsafe_allow_html=True)
 
+    for idx, dev in enumerate(devices):
+        diagnosis = dev.get("diagnosis","Unknown")
+        distance, gap, wall_label = classify_wall_vs_distance(dev)
 
-# ============================================================
-# AUTO REFRESH
-# ============================================================
+        if "Optimal" in diagnosis:
+            scls = "s-green"; icon = "✓"
+        elif any(x in diagnosis for x in ["Attenuated Signal", "Device-Specific Issue", "🔴"]):
+            scls = "s-red"; icon = "!"
+        else:
+            scls = "s-amber"; icon = "⚠"
+
+        with st.container(border=True):
+            c1, c2, c3, c4, c5, c6 = st.columns([1.45, 1.45, .9, .9, 1.0, 1.55])
+            with c1:
+                st.markdown(f'<div class="device-name">{dev["device_id"]}</div><div class="device-meta">{dev.get("band","?")} · {dev.get("standard","?")}</div>', unsafe_allow_html=True)
+            with c2:
+                st.markdown(f'<span class="status {scls}">{icon} {diagnosis}</span>', unsafe_allow_html=True)
+            with c3:
+                st.markdown(f'<div class="field-label">RSSI</div><div class="field-value">{dev["rssi"]} dBm</div>', unsafe_allow_html=True)
+            with c4:
+                st.markdown(f'<div class="field-label">SNR</div><div class="field-value">{dev["snr"]} dB</div>', unsafe_allow_html=True)
+            with c5:
+                st.markdown(f'<div class="field-label">DISTANCE</div><div class="field-value">~{distance} m</div>', unsafe_allow_html=True)
+            with c6:
+                st.markdown(f'<div class="field-label">ASSESSMENT</div><div class="field-value" style="font-size:.74rem;">{wall_label}</div>', unsafe_allow_html=True)
+
+            with st.expander(f"Analysis, recommendation & Backend Ticketing — {dev['device_id']}"):
+                st.markdown(f"**Why:** {dev.get('reason','No additional reasoning available.')}")
+                
+                # Recommendation logic
+                diag_clean = diagnosis.replace("🟢 ", "").replace("🟡 ", "").replace("🟠 ", "").replace("🔴 ", "").replace("🟣 ", "").strip()
+                if diag_clean == "Attenuated Signal":
+                    st.error("Recommendation: relocate the router or add a mesh node near this device.")
+                elif diag_clean == "Far Distance":
+                    st.warning("Recommendation: move the device closer or add a range extender.")
+                elif diag_clean == "Hardware Limited":
+                    st.warning("Recommendation: this device's Wi-Fi adapter limits capability; a network change may not solve it.")
+                elif diag_clean == "Congestion":
+                    st.warning("Recommendation: move this device to a less congested channel or band.")
+                else:
+                    st.success("Recommendation: no immediate action required.")
+
+                # Backend Ticket integration button
+                unique_key = f"btn_{dev['device_id']}_{idx}_{time.time()}"
+                if st.button(f"🚀 File Backend Ticket for {dev['device_id']}", key=unique_key):
+                    try:
+                        payload = {
+                            "device_id": dev["device_id"],
+                            "issue": diag_clean,
+                            "reason": dev["reason"]
+                        }
+                        response = requests.post(TICKET_URL, json=payload)
+                        if response.status_code == 200:
+                            res_data = response.json()
+                            st.success(f"Ticket Successfully Filed! ID: {res_data.get('ticket_id')} (Status: {res_data.get('status')})")
+                        else:
+                            st.error("Failed to reach backend mock server on port 6000.")
+                    except Exception as e:
+                        st.error(f"Connection error to backend: {e}")
+
+    # ========================= MAP + INSIGHTS =========================
+    map_left, map_right = st.columns([1.7, .8])
+    with map_left:
+        st.markdown("""
+        <div class="card">
+          <div class="card-title">Wall / Distance Overlay</div>
+          <div class="card-sub">Implied device position from RSSI · router at center · rings represent increasing distance</div>
+        """, unsafe_allow_html=True)
+        st.plotly_chart(build_overlay_figure(devices), use_container_width=True, config={"displayModeBar":False})
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with map_right:
+        st.markdown("""
+        <div class="card">
+          <div class="card-title">Network Readout</div>
+          <div class="card-sub">At-a-glance interpretation</div>
+        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="insight"><div class="insight-title">🟢 Optimal</div><div class="insight-text">{optimal} device(s) in healthy range.</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="insight"><div class="insight-title">🟠 Attention</div><div class="insight-text">{len(devices)-optimal-poor} congestion/hardware cases.</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="insight"><div class="insight-title">🔴 Weak coverage</div><div class="insight-text">{poor} device(s) affected by distance or walls.</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="insight"><div class="insight-title">📍 Placement insight</div><div class="insight-text">Use the map to identify devices far from the router.</div></div></div>', unsafe_allow_html=True)
+
+else:
+    st.info("No devices reporting yet.")
+
+# ========================= TICKETS LOG =========================
+if tickets:
+    st.markdown("---")
+    st.markdown(f"### 🎫 Recent Backend Tickets Log ({len(tickets)} total)")
+    with st.expander("View all synced tickets payload"):
+        st.json(tickets)
 
 if auto_refresh:
-
     time.sleep(3)
-
     st.rerun()
