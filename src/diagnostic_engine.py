@@ -61,26 +61,35 @@ def classify(device, network_devices=None, freq_mhz=5000):
         return "Hardware Limited", (
             f"Device max standard is {device['standard']}, "
             f"below network's {NETWORK_MAX_STANDARD}"
-        ), 95  # capability mismatch is a hard fact, not a fuzzy reading -> high confidence
+        ), 95  
+
+    # --- Signal Critically Weak (Overrides others if completely unusable) ---
+    if device["rssi"] < -85 and device["snr"] < 8:
+        return "Signal Critically Weak", (
+            f"RSSI {device['rssi']}dBm / SNR {device['snr']}dB is at the edge of "
+            "usability — root cause (distance vs. obstruction) can't be reliably "
+            "distinguished at this signal level"
+        ), 30
 
     # --- Attenuated Signal ---
     if device["rssi"] < -70 and device["snr"] < 15:
         _, atten_db, walls = estimate_wall_attenuation(device["rssi"], freq_mhz)
-        wall_note = f" — consistent with ~{walls} wall(s) of excess attenuation ({atten_db}dB)" if walls > 0 else ""
+        wall_note = f" — consistent with ~{walls} wall(s) of excess attenuation" if walls > 0 else ""
         return "Attenuated Signal", (
-            f"Weak RSSI + low SNR indicates obstruction{wall_note}"
-        )
-    # --- Far Distance (now with estimated distance in meters) ---
+            f"RSSI {device['rssi']}dBm and SNR {device['snr']}dB both low"
+            f"{wall_note}"
+        ), 85
+
     # --- Far Distance ---
     if device["rssi"] < -75 and device["snr"] >= 15:
         est_distance, _, _ = estimate_wall_attenuation(device["rssi"], freq_mhz)
         return "Far Distance", (
             f"Low RSSI but decent SNR ({device['snr']}dB) indicates pure distance "
             f"rather than obstruction — estimated ~{est_distance}m from AP"
-        )
+        ), 85
 
     # --- Congestion ---
-    if device["retry_rate"] > 15:
+    if device.get("retry_rate", 0) > 15:
         margin = device["retry_rate"] - 15
         return "Congestion", (
             f"Retry rate {device['retry_rate']}% high despite decent signal"
@@ -96,15 +105,13 @@ def classify(device, network_devices=None, freq_mhz=5000):
                 f"({avg_rssi:.1f}dBm) — likely local to this device, not the network"
             ), _confidence(margin)
 
-    # --- Optimal (now checks against theoretical max PHY rate if provided) ---
-    if device["rssi"] >= -70 and device["snr"] >= 15 and device["retry_rate"] <= 15:
+    # --- Optimal (checks against theoretical max PHY rate if provided) ---
+    if device["rssi"] >= -70 and device["snr"] >= 15 and device.get("retry_rate", 0) < 15:
         max_rate = get_max_rate(device["standard"])
-        phy_rate = device.get("phy_rate")  # optional field, only checked if present
+        phy_rate = device.get("phy_rate")  
         if phy_rate is not None and max_rate:
             pct_of_max = round((phy_rate / max_rate) * 100)
             if pct_of_max < 50:
-                # Good signal but running far below theoretical max -> likely congestion,
-                # not truly optimal, even though retry rate looked fine
                 return "Congestion", (
                     f"Signal is healthy but PHY rate {phy_rate}Mbps is only "
                     f"{pct_of_max}% of {device['standard']}'s {max_rate}Mbps max "
@@ -116,18 +123,10 @@ def classify(device, network_devices=None, freq_mhz=5000):
             ), 90
         return "Optimal", "Signal and standard both healthy", 85
 
-    if device["rssi"] < -85 and device["snr"] < 8:
-        return "Signal Critically Weak", (
-               f"RSSI {device['rssi']}dBm / SNR {device['snr']}dB is at the edge of "
-                "usability — root cause (distance vs. obstruction) can't be reliably "
-                "distinguished at this signal level"
-        ), 30
     # --- Fallback ---
     return "Insufficient Information", (
-        "Telemetry doesn't clearly match any category — "
-        "needs more samples or manual review"
+        "Telemetry doesn't clearly match any category — needs more samples or manual review"
     ), 0
-
 
 if __name__ == "__main__":
     from synthetic_generator import generate_device, DEVICE_PROFILES
