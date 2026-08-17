@@ -89,9 +89,9 @@ def track_trend(device):
         return "Stable", 0.0
 
     delta = hist[-1] - hist[0]
-    if delta > 3:
+    if delta > 2:
         return "Improving", round(delta, 1)
-    if delta < -3:
+    if delta < -2:
         return "Degrading", round(delta, 1)
     return "Stable", round(delta, 1)
 
