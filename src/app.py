@@ -1,134 +1,45 @@
 """
 Wi-Fi Band Analyzer — Modernized Dashboard
------------------------ynthetic_generator.py). Does NOT modify either of those files.
-
-Run with:
-    streamlit run app.py
-"""
-
-import os
-import sys
-import time
-import random
-import io
-from datetime import datetime
-
-import pandas as pd
-import altair as alt
-import streamlit as st
-
-sys.path.append(os.path.dirname(__file__))
-
-from synthetic_generator import generate, DEVICE_PROFILES  # noqa: E402
-from diagnostic_engine import smooth, classify  # noqa: E402
-
-try:
-    from wifi_standards import get_max_rate
-except Exception:  # pragma: no cover - optional, safe no-op if not present
-    get_max_rate = None
-
-# ----------------------------------------------------------------------------
-# Page config + styling
-# ----------------------------------------------------------------------------
-
-st.set_page_config(
-    page_title="Wi-Fi Band Analyzer",
-    page_icon="📡",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-st.markdown(
-    """
-    <style>
-    .block-container { padding-top: 1.5rem; }
-    div[data-testid="stMetric"] {
-        background: #12161c;
-        border: 1px solid #262b33;
-        border-radius: 10px;
-        padding: 12px 16px;
-    }
-    div[data-testid="stMetricLabel"] { font-size: 0.8rem; opacity: 0.75; }
-    .badge {
-        display: inline-block; padding: 2px 10px; border-radius: 999px;
-        font-size: 0.78rem; font-weight: 600; color: white;
-    }
-    .card {
-        background: #12161c; border: 1px solid #262b33; border-radius: 10px;
-        padding: 14px 16px; margin-bottom: 10px;
-    }
-    .small-muted { opacity: 0.65; font-size: 0.82rem; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-CATEGORY_COLORS = {
-    "Optimal": "#22c55e",
-    "Hardware Limited": "#eab308",
-    "Far Distance": "#f97316",
-    "Attenuated Signal": "#ef4444",
-    "Congestion": "#a855f7",
-    "Device-Specific Issue": "#3b82f6",
-    "Signal Critically Weak": "#7f1d1d",
-    "Insufficient Information": "#6b7280",
-}
-
-SEVERITY = {
-    "Optimal": 0,
-    "Hardware Limited": 1,
-    "Device-Specific Issue": 1,
-    "Far Distance": 1,
-    "Congestion": 2,
-    "Attenuated Signal": 2,
-    "Signal Critically Weak": 3,
-    "Insufficient Information": 1,
-}
-
-NETWORK_MAX_STANDARD = "wifi6e"
-"""
-Wi-Fi Band Analyzer — Modernized Dashboard
 -------------------------------------------
 Drop this into src/app.py (same folder as diagnostic_engine.py and
 synthetic_generator.py). Does NOT modify either of those files.
- 
+
 Run with:
     streamlit run app.py
 """
- 
+
 import os
 import sys
 import time
 import random
-import io
 from datetime import datetime
- 
+
 import pandas as pd
 import altair as alt
 import plotly.graph_objects as go
 import streamlit as st
- 
+
 sys.path.append(os.path.dirname(__file__))
- 
+
 from synthetic_generator import generate, DEVICE_PROFILES  # noqa: E402
 from diagnostic_engine import smooth, classify  # noqa: E402
- 
+
 try:
     from wifi_standards import get_max_rate
 except Exception:  # pragma: no cover - optional, safe no-op if not present
     get_max_rate = None
- 
+
 # ----------------------------------------------------------------------------
 # Page config + styling
 # ----------------------------------------------------------------------------
- 
+
 st.set_page_config(
     page_title="Wi-Fi Band Analyzer",
     page_icon="📡",
     layout="wide",
     initial_sidebar_state="expanded",
 )
- 
+
 st.markdown(
     """
     <style>
@@ -153,7 +64,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
- 
+
 CATEGORY_COLORS = {
     "Optimal": "#22c55e",
     "Hardware Limited": "#eab308",
@@ -164,7 +75,7 @@ CATEGORY_COLORS = {
     "Signal Critically Weak": "#7f1d1d",
     "Insufficient Information": "#6b7280",
 }
- 
+
 SEVERITY = {
     "Optimal": 0,
     "Hardware Limited": 1,
@@ -175,7 +86,7 @@ SEVERITY = {
     "Signal Critically Weak": 3,
     "Insufficient Information": 1,
 }
- 
+
 RECOMMENDATIONS = {
     "Optimal": "No action required — connection is healthy.",
     "Hardware Limited": "Client radio can't keep up with current conditions. "
@@ -193,15 +104,15 @@ RECOMMENDATIONS = {
     "Insufficient Information": "Not enough stable telemetry yet — keep "
                                  "monitoring before taking action.",
 }
- 
+
 NETWORK_MAX_STANDARD = "wifi6e"
- 
- 
+
+
 def badge(label: str) -> str:
     color = CATEGORY_COLORS.get(label, "#6b7280")
     return f'<span class="badge" style="background:{color}">{label}</span>'
- 
- 
+
+
 def freq_for_band(band) -> int:
     """Map a device's band string to a representative frequency in MHz,
     so classify() gets a realistic freq_mhz instead of always defaulting."""
@@ -211,12 +122,12 @@ def freq_for_band(band) -> int:
     if "2.4" in band or band.startswith("2"):
         return 2400
     return 5000
- 
- 
+
+
 # ----------------------------------------------------------------------------
 # Session state (persistent devices — do NOT regenerate randomly every loop)
 # ----------------------------------------------------------------------------
- 
+
 def _init_device(device_id: str, profile: str) -> dict:
     d = generate(device_id, profile)
     d["profile"] = profile
@@ -226,43 +137,43 @@ def _init_device(device_id: str, profile: str) -> dict:
         if max_rate:
             d["phy_rate"] = round(max_rate * random.uniform(0.55, 0.95), 1)
     return d
- 
- 
+
+
 if "devices" not in st.session_state:
     profiles = list(DEVICE_PROFILES.keys())
     st.session_state.devices = [
         _init_device(f"dev{i}", profiles[i % len(profiles)]) for i in range(8)
     ]
- 
+
 if "event_log" not in st.session_state:
     st.session_state.event_log = []
- 
+
 if "tickets" not in st.session_state:
     st.session_state.tickets = []
- 
+
 if "last_label" not in st.session_state:
     st.session_state.last_label = {}
- 
+
 if "history" not in st.session_state:
     st.session_state.history = {d["device_id"]: [] for d in st.session_state.devices}
- 
+
 if "auto_refresh" not in st.session_state:
     st.session_state.auto_refresh = True
- 
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
- 
- 
+
+
 def drift(device: dict, amount: float = 2.0) -> dict:
     device["rssi"] += random.uniform(-amount, amount)
     device["snr"] = max(0.0, device["snr"] + random.uniform(-amount / 2, amount / 2))
     device["retry_rate"] = round(max(0.0, device["retry_rate"] + random.uniform(-1.0, 1.0)), 1)
     return device
- 
- 
+
+
 TICKET_WORTHY = {"Attenuated Signal", "Congestion", "Signal Critically Weak"}
- 
- 
+
+
 def file_ticket(device_id: str, issue: str, reason: str) -> dict:
     """Create a ticket in the shared tickets list (used by both the manual
     'File ticket' button and the AI assistant's autonomous scan)."""
@@ -277,17 +188,17 @@ def file_ticket(device_id: str, issue: str, reason: str) -> dict:
     }
     st.session_state.tickets.insert(0, ticket)
     return ticket
- 
- 
+
+
 def has_open_ticket(device_id: str) -> bool:
     return any(t["device_id"] == device_id and t["status"] == "Open" for t in st.session_state.tickets)
- 
- 
+
+
 def run_cycle() -> list:
     results = []
     devices = st.session_state.devices
     now = datetime.now().strftime("%H:%M:%S")
- 
+
     for d in devices:
         drift(d)
         smooth(d)
@@ -296,10 +207,8 @@ def run_cycle() -> list:
                 d, network_devices=devices, freq_mhz=freq_for_band(d.get("band"))
             )
         except TypeError:
-            # Installed diagnostic_engine.classify() doesn't accept freq_mhz —
-            # fall back to the simpler call so the dashboard still runs.
             result = classify(d, network_devices=devices)
- 
+
         if len(result) >= 3:
             label, reason, confidence = result[0], result[1], result[2]
         elif len(result) == 2:
@@ -307,7 +216,7 @@ def run_cycle() -> list:
             confidence = 100 if label == "Optimal" else 70
         else:
             label, reason, confidence = "Insufficient Information", "Diagnostic engine returned no data.", 0
- 
+
         prev = st.session_state.last_label.get(d["device_id"])
         if prev is not None and prev != label:
             st.session_state.event_log.insert(0, {
@@ -317,21 +226,21 @@ def run_cycle() -> list:
             if label in TICKET_WORTHY and (not prev or prev not in TICKET_WORTHY):
                 file_ticket(d["device_id"], label, reason)
         st.session_state.last_label[d["device_id"]] = label
- 
+
         hist = st.session_state.history.setdefault(d["device_id"], [])
         hist.append(d["rssi"])
         if len(hist) > 20:
             hist.pop(0)
- 
+
         results.append({**d, "diagnosis": label, "reason": reason, "confidence": confidence})
- 
+
     return results
- 
- 
+
+
 # ----------------------------------------------------------------------------
 # Sidebar controls
 # ----------------------------------------------------------------------------
- 
+
 with st.sidebar:
     st.markdown("### 📡 Wi-Fi Band Analyzer")
     st.caption("Live root-cause diagnostics across 2.4 / 5 / 6 GHz")
@@ -343,41 +252,41 @@ with st.sidebar:
     st.divider()
     st.markdown("**Export**")
     st.caption("See the Export tab to download CSV snapshots.")
- 
- 
+
+
 # ----------------------------------------------------------------------------
 # Run a diagnostic cycle
 # ----------------------------------------------------------------------------
- 
+
 results = run_cycle()
 df = pd.DataFrame(results)
- 
+
 # ----------------------------------------------------------------------------
 # Header — Network Health
 # ----------------------------------------------------------------------------
- 
+
 st.title("Wi-Fi Band Analyzer")
 st.caption("Root-cause diagnostics · Kalman-smoothed telemetry · explainable classification")
- 
+
 problem_count = int((df["diagnosis"] != "Optimal").sum())
 avg_rssi = round(df["rssi"].mean(), 1)
 avg_snr = round(df["snr"].mean(), 1)
 open_tickets = sum(1 for t in st.session_state.tickets if t["status"] == "Open")
 health_score = max(0, round(100 - (problem_count / len(df)) * 70 - open_tickets * 5))
- 
+
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Network Health", f"{health_score}%")
 c2.metric("Devices Monitored", len(df))
 c3.metric("Devices Flagged", problem_count)
 c4.metric("Avg RSSI", f"{avg_rssi} dBm")
 c5.metric("Open Tickets", open_tickets)
- 
+
 st.divider()
- 
+
 # ----------------------------------------------------------------------------
 # Tabs
 # ----------------------------------------------------------------------------
- 
+
 (
     tab_overview, tab_devices, tab_recs, tab_bands,
     tab_timeline, tab_tickets, tab_ai, tab_export,
@@ -385,11 +294,11 @@ st.divider()
     "🏠 Overview", "📶 Device Summary", "🛠 Recommendations", "🗺️ Band & Channel",
     "🕒 Event Timeline", "🎫 Tickets", "🤖 AI Assistant", "⬇️ Export",
 ])
- 
+
 # ---- Overview: root causes + detected problems + alerts ----
 with tab_overview:
     left, right = st.columns([1.1, 1])
- 
+
     with left:
         st.subheader("Root Cause Distribution")
         cause_counts = df["diagnosis"].value_counts().reset_index()
@@ -410,7 +319,7 @@ with tab_overview:
             .properties(height=260)
         )
         st.altair_chart(chart, use_container_width=True)
- 
+
     with right:
         st.subheader("🚨 Active Alerts")
         problems = df[df["diagnosis"] != "Optimal"].sort_values(
@@ -428,7 +337,7 @@ with tab_overview:
                     </div>""",
                     unsafe_allow_html=True,
                 )
- 
+
     st.subheader("Detected Problems (Full Detail)")
     if problems.empty:
         st.caption("Nothing to show — network is healthy.")
@@ -445,7 +354,7 @@ with tab_overview:
                 ),
             },
         )
- 
+
 # ---- Device Summary ----
 with tab_devices:
     st.subheader("All Connected Devices")
@@ -464,24 +373,24 @@ with tab_devices:
             "retry_rate": st.column_config.NumberColumn("Retry %", format="%.1f"),
         },
     )
- 
+
     st.subheader("Reasoning Trace")
     for _, row in df.iterrows():
         with st.expander(f"{row['device_id']} — {badge(row['diagnosis'])}", expanded=False):
             trace_left, trace_right = st.columns([2, 1])
- 
+
             with trace_left:
                 st.markdown(row["reason"], unsafe_allow_html=False)
                 st.progress(int(row["confidence"]), text=f"Confidence: {row['confidence']}%")
                 st.caption(f"Recommendation: {RECOMMENDATIONS.get(row['diagnosis'], '—')}")
- 
+
                 if row["diagnosis"] != "Optimal" and not has_open_ticket(row["device_id"]):
                     if st.button(f"🎫 File ticket for {row['device_id']}", key=f"manual_ticket_{row['device_id']}"):
                         file_ticket(row["device_id"], row["diagnosis"], row["reason"])
                         st.rerun()
                 elif row["diagnosis"] != "Optimal":
                     st.caption("An open ticket already exists for this device.")
- 
+
             with trace_right:
                 gauge = go.Figure(go.Indicator(
                     mode="gauge+number",
@@ -502,7 +411,7 @@ with tab_devices:
                     gauge, use_container_width=True, config={"displayModeBar": False},
                     key=f"gauge_{row['device_id']}",
                 )
- 
+
 # ---- Recommendations ----
 with tab_recs:
     st.subheader("Recommended Actions")
@@ -521,11 +430,11 @@ with tab_recs:
             </div>""",
             unsafe_allow_html=True,
         )
- 
+
 # ---- Band & Channel analysis (includes heatmap) ----
 with tab_bands:
     colA, colB = st.columns(2)
- 
+
     with colA:
         st.subheader("Band Distribution")
         band_counts = df["band"].value_counts().reset_index()
@@ -536,7 +445,7 @@ with tab_bands:
             ).properties(height=260),
             use_container_width=True,
         )
- 
+
     with colB:
         st.subheader("Channel Congestion")
         chan_counts = df.groupby(["band", "channel"]).size().reset_index(name="count")
@@ -550,7 +459,7 @@ with tab_bands:
             use_container_width=True,
         )
         st.caption("Channel assignment is simulated for demo purposes until real per-device channel telemetry is captured.")
- 
+
     st.subheader("Signal Heatmap — RSSI Over Recent Readings")
     hist_rows = []
     for did, hist in st.session_state.history.items():
@@ -572,7 +481,7 @@ with tab_bands:
         st.altair_chart(heatmap, use_container_width=True)
     else:
         st.caption("Collecting readings — heatmap will populate after a few refresh cycles.")
- 
+
 # ---- Event Timeline ----
 with tab_timeline:
     st.subheader("Diagnosis Change Events")
@@ -588,7 +497,7 @@ with tab_timeline:
                 </div>""",
                 unsafe_allow_html=True,
             )
- 
+
 # ---- Tickets ----
 with tab_tickets:
     st.subheader("Support Tickets")
@@ -615,16 +524,16 @@ with tab_tickets:
                     if st.button("Resolve", key=f"resolve_{t['ticket_id']}"):
                         t["status"] = "Resolved"
                         st.rerun()
- 
+
 # ---- AI Assistant (agentic, rule-based — no external API needed) ----
- 
+
 def ai_agent_response(query: str) -> str:
     """Local 'agent' that reasons over the current device telemetry (df,
     session_state.tickets, health_score, etc.) and can take actions like
     filing tickets — no external LLM/API call required, so it works
     offline out of the box during a demo."""
     q = query.lower()
- 
+
     if "file ticket" in q or "autonomous" in q or ("auto" in q and "ticket" in q):
         filed = []
         for _, row in df[df["diagnosis"] != "Optimal"].iterrows():
@@ -635,7 +544,7 @@ def ai_agent_response(query: str) -> str:
         if filed:
             return f"Ran an autonomous scan and filed tickets for: {', '.join(filed)}. Check the Tickets tab."
         return "Ran an autonomous scan — every flagged device already has an open ticket, nothing new to file."
- 
+
     if "attention" in q or "problem" in q or "issue" in q or "flagged" in q:
         flagged = df[df["diagnosis"] != "Optimal"].sort_values("confidence", ascending=False)
         if flagged.empty:
@@ -643,41 +552,41 @@ def ai_agent_response(query: str) -> str:
         lines = [f"- **{r.device_id}**: {r.diagnosis} ({r.confidence}% confidence) — {r.reason}"
                  for r in flagged.itertuples()]
         return "Devices needing attention:\n" + "\n".join(lines)
- 
+
     if "summar" in q or "health" in q or "overview" in q:
         return (f"Network health score is {health_score}%. {problem_count} of {len(df)} devices are "
                 f"flagged, {open_tickets} ticket(s) are open. Average RSSI is {avg_rssi} dBm and "
                 f"average SNR is {avg_snr} dB.")
- 
+
     if "recommend" in q:
         flagged = df[df["diagnosis"] != "Optimal"]
         if flagged.empty:
             return "No action needed right now — every device is Optimal."
         lines = [f"- **{r.device_id}**: {RECOMMENDATIONS.get(r.diagnosis, '—')}" for r in flagged.itertuples()]
         return "Recommendations:\n" + "\n".join(lines)
- 
+
     if "channel" in q or "congest" in q or "band" in q:
         congested = df[df["diagnosis"] == "Congestion"]
         if not congested.empty:
             names = ", ".join(congested["device_id"])
             return f"Congestion detected on: {names}. Consider a channel switch or moving them to a quieter band."
         return "No congestion detected in the current cycle."
- 
+
     for _, row in df.iterrows():
         if row["device_id"].lower() in q:
             return (f"**{row['device_id']}** — {row['diagnosis']} ({row['confidence']}% confidence). "
                     f"{row['reason']} Recommendation: {RECOMMENDATIONS.get(row['diagnosis'], '—')}")
- 
+
     return ("I can summarize network health, list flagged devices, explain root causes, "
             "give recommendations, check channel congestion, or auto-file tickets — "
             "just ask, e.g. \"which devices need attention?\" or \"run autonomous scan and file tickets\".")
- 
- 
+
+
 with tab_ai:
     st.subheader("🤖 Network AI Assistant")
     st.caption("Ask about network health, root causes, or let it act for you — "
                "runs locally on live telemetry, no external API required.")
- 
+
     qc1, qc2, qc3, qc4 = st.columns(4)
     quick_prompts = {
         qc1: "Summarize network health",
@@ -690,20 +599,20 @@ with tab_ai:
         with col:
             if st.button(prompt, use_container_width=True, key=f"quick_{prompt}"):
                 triggered_prompt = prompt
- 
+
     for role, text in st.session_state.chat_history:
         with st.chat_message(role):
             st.markdown(text)
- 
+
     user_msg = st.chat_input("Ask the network assistant...")
     final_msg = triggered_prompt or user_msg
- 
+
     if final_msg:
         st.session_state.chat_history.append(("user", final_msg))
         reply = ai_agent_response(final_msg)
         st.session_state.chat_history.append(("assistant", reply))
         st.rerun()
- 
+
 # ---- Export ----
 with tab_export:
     st.subheader("Export Data")
@@ -716,7 +625,7 @@ with tab_export:
         use_container_width=True,
         key="export_snapshot",
     )
- 
+
     if st.session_state.event_log:
         events_csv = pd.DataFrame(st.session_state.event_log).to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -727,7 +636,7 @@ with tab_export:
             use_container_width=True,
             key="export_events",
         )
- 
+
     if st.session_state.tickets:
         tickets_csv = pd.DataFrame(st.session_state.tickets).to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -738,16 +647,14 @@ with tab_export:
             use_container_width=True,
             key="export_tickets",
         )
- 
+
 # ----------------------------------------------------------------------------
 # Auto-refresh loop
 # ----------------------------------------------------------------------------
- 
+
 if refresh_now:
     st.rerun()
- 
+
 if st.session_state.auto_refresh:
     time.sleep(3)
     st.rerun()
- 
-
