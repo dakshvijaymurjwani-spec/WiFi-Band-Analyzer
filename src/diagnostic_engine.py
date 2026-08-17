@@ -1,4 +1,4 @@
-from wifi_standards import estimate_distance_from_rssi, get_max_rate
+from wifi_standards import estimate_distance_from_rssi, get_max_rate, estimate_wall_attenuation
 
 NETWORK_MAX_STANDARD = "wifi6e"
 
@@ -65,20 +65,19 @@ def classify(device, network_devices=None, freq_mhz=5000):
 
     # --- Attenuated Signal ---
     if device["rssi"] < -70 and device["snr"] < 15:
-        margin = (-70 - device["rssi"]) + (15 - device["snr"])
+        _, atten_db, walls = estimate_wall_attenuation(device["rssi"], freq_mhz)
+        wall_note = f" — consistent with ~{walls} wall(s) of excess attenuation ({atten_db}dB)" if walls > 0 else ""
         return "Attenuated Signal", (
-            f"RSSI {device['rssi']}dBm and SNR {device['snr']}dB both low "
-            "— likely obstruction, not distance alone"
-        ), _confidence(margin)
-
+            f"Weak RSSI + low SNR indicates obstruction{wall_note}"
+        )
     # --- Far Distance (now with estimated distance in meters) ---
+    # --- Far Distance ---
     if device["rssi"] < -75 and device["snr"] >= 15:
-        est_distance = estimate_distance_from_rssi(device["rssi"], freq_mhz)
-        margin = (-75 - device["rssi"])
+        est_distance, _, _ = estimate_wall_attenuation(device["rssi"], freq_mhz)
         return "Far Distance", (
-            f"RSSI {device['rssi']}dBm low but SNR {device['snr']}dB reasonable "
-            f"— estimated ~{est_distance}m from AP, likely pure distance"
-        ), _confidence(margin)
+            f"Low RSSI but decent SNR ({device['snr']}dB) indicates pure distance "
+            f"rather than obstruction — estimated ~{est_distance}m from AP"
+        )
 
     # --- Congestion ---
     if device["retry_rate"] > 15:

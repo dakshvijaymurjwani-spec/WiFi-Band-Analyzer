@@ -68,3 +68,27 @@ if __name__ == "__main__":
 
     print("\nEstimated distance from RSSI -75dBm (5GHz, indoor n=3.5):")
     print(f"  {estimate_distance_from_rssi(-75, 5000)} m")
+
+
+def estimate_wall_attenuation(rssi, freq_mhz, d0=1.0, rssi_at_d0=-40,
+                               indoor_exponent=3.5, open_air_exponent=2.0, wall_db=5.0):
+    """
+    Estimates distance using the indoor exponent (which already assumes typical
+    attenuation), then checks how much stronger the signal would be at that same
+    distance under open-air propagation. The gap is a rough proxy for excess
+    attenuation beyond the indoor baseline — not a true per-device wall count,
+    since a single RSSI reading can't fully separate distance from obstruction.
+    wall_db=5.0 is a typical interior-wall attenuation figure (see literature survey).
+    Returns (indoor_distance_m, attenuation_db, estimated_wall_count).
+    """
+    indoor_distance = estimate_distance_from_rssi(
+        rssi, freq_mhz, path_loss_exponent=indoor_exponent,
+        d0=d0, rssi_at_d0=rssi_at_d0
+    )
+    expected_open_air_rssi = log_distance_path_loss(
+        indoor_distance, freq_mhz, path_loss_exponent=open_air_exponent,
+        d0=d0, rssi_at_d0=rssi_at_d0
+    )
+    attenuation_db = round(expected_open_air_rssi - rssi, 1)
+    wall_count = max(0, round(attenuation_db / wall_db)) if attenuation_db > 0 else 0
+    return round(indoor_distance, 2), attenuation_db, wall_count
