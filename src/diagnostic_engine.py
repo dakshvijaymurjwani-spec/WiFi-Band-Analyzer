@@ -1,3 +1,5 @@
+from wifi_standards import estimate_distance_from_rssi, get_max_rate
+
 NETWORK_MAX_STANDARD = "wifi6e"
 
 
@@ -24,7 +26,6 @@ class KalmanFilter1D:
         return round(self.estimate, 2)
 
 
-# one filter pair per device — each device's signal has its own noise profile
 device_filters = {}
 
 
@@ -40,51 +41,87 @@ def smooth(device):
     return device
 
 
-def classify(device, network_devices=None):
+def _confidence(margin, scale=10):
     """
-    Returns (label, reason). Falls back to 'Insufficient Information'
-    when no rule confidently fires, instead of forcing a guess —
-    mirrors the confidence-gated decision tree pattern from the
-    Cisco-style root-cause patents.
+    Turns 'how far past the threshold' into a rough 0-100 confidence score.
+    margin: how many units past the threshold the value is (always >= 0 when called correctly)
+    scale: how many units of margin count as 'fully confident'
     """
+    score = min(100, round((margin / scale) * 100))
+    return max(score, 40)  # never show below 40 for a rule that did fire
+
+
+def classify(device, network_devices=None, freq_mhz=5000):
+    """
+    Returns (label, reason, confidence). Falls back to 'Insufficient Information'
+    when no rule confidently fires, instead of forcing a guess.
+    """
+    # --- Hardware Limited ---
     if device["standard"] == "wifi4" and device["band"] == "2.4GHz":
         return "Hardware Limited", (
             f"Device max standard is {device['standard']}, "
             f"below network's {NETWORK_MAX_STANDARD}"
-        )
+        ), 95  # capability mismatch is a hard fact, not a fuzzy reading -> high confidence
 
+    # --- Attenuated Signal ---
     if device["rssi"] < -70 and device["snr"] < 15:
+        margin = (-70 - device["rssi"]) + (15 - device["snr"])
         return "Attenuated Signal", (
             f"RSSI {device['rssi']}dBm and SNR {device['snr']}dB both low "
             "— likely obstruction, not distance alone"
-        )
+        ), _confidence(margin)
 
+    # --- Far Distance (now with estimated distance in meters) ---
     if device["rssi"] < -75 and device["snr"] >= 15:
+        est_distance = estimate_distance_from_rssi(device["rssi"], freq_mhz)
+        margin = (-75 - device["rssi"])
         return "Far Distance", (
             f"RSSI {device['rssi']}dBm low but SNR {device['snr']}dB reasonable "
-            "— likely pure distance"
-        )
+            f"— estimated ~{est_distance}m from AP, likely pure distance"
+        ), _confidence(margin)
 
+    # --- Congestion ---
     if device["retry_rate"] > 15:
+        margin = device["retry_rate"] - 15
         return "Congestion", (
             f"Retry rate {device['retry_rate']}% high despite decent signal"
-        )
+        ), _confidence(margin, scale=15)
 
+    # --- Device-Specific Issue (multi-device check) ---
     if network_devices and len(network_devices) > 1:
         avg_rssi = sum(d["rssi"] for d in network_devices) / len(network_devices)
         if device["rssi"] < avg_rssi - 15:
+            margin = (avg_rssi - 15) - device["rssi"]
             return "Device-Specific Issue", (
                 f"RSSI {device['rssi']}dBm is far worse than network average "
                 f"({avg_rssi:.1f}dBm) — likely local to this device, not the network"
-            )
+            ), _confidence(margin)
 
+    # --- Optimal (now checks against theoretical max PHY rate if provided) ---
     if device["rssi"] >= -70 and device["snr"] >= 15 and device["retry_rate"] <= 15:
-        return "Optimal", "Signal and standard both healthy"
+        max_rate = get_max_rate(device["standard"])
+        phy_rate = device.get("phy_rate")  # optional field, only checked if present
+        if phy_rate is not None and max_rate:
+            pct_of_max = round((phy_rate / max_rate) * 100)
+            if pct_of_max < 50:
+                # Good signal but running far below theoretical max -> likely congestion,
+                # not truly optimal, even though retry rate looked fine
+                return "Congestion", (
+                    f"Signal is healthy but PHY rate {phy_rate}Mbps is only "
+                    f"{pct_of_max}% of {device['standard']}'s {max_rate}Mbps max "
+                    "— likely channel contention"
+                ), 70
+            return "Optimal", (
+                f"Signal and standard both healthy, PHY rate at {pct_of_max}% of "
+                f"theoretical max ({max_rate}Mbps for {device['standard']})"
+            ), 90
+        return "Optimal", "Signal and standard both healthy", 85
 
+    # --- Fallback ---
     return "Insufficient Information", (
         "Telemetry doesn't clearly match any category — "
         "needs more samples or manual review"
-    )
+    ), 0
 
 
 if __name__ == "__main__":
@@ -102,7 +139,8 @@ if __name__ == "__main__":
         smooth(d)
         print(f"  {d['device_id']:6s} raw_rssi={raw_rssi} -> smoothed={d['rssi']}")
 
-    print("\nClassification (with single-vs-multi-device check):")
+    print("\nClassification (with distance estimate, PHY-rate check, confidence):")
     for d in devices:
-        label, reason = classify(d, network_devices=devices)
-        print(f"  {d['device_id']:6s} ({d['profile']:11s}) -> {label:22s} | {reason}")
+        label, reason, confidence = classify(d, network_devices=devices)
+        print(f"  {d['device_id']:6s} ({d['profile']:11s}) -> {label:22s} "
+              f"[{confidence}%] | {reason}")

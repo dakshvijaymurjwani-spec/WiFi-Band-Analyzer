@@ -28,13 +28,16 @@ while True:
     devices = []
     for i, profile in enumerate(DEVICE_PROFILES.keys()):
         d = generate_device(f"dev{i}", profile)
-        label, reason = classify(d)
-        d["diagnosis"] = f"{COLOR_MAP.get(label, '')} {label}"
-        d["reason"] = reason
         devices.append(d)
 
+    for d in devices:
+        label, reason, confidence = classify(d, network_devices=devices)
+        d["diagnosis"] = f"{COLOR_MAP.get(label, '')} {label}"
+        d["reason"] = reason
+        d["confidence"] = f"{confidence}%"
+
     with placeholder.container():
-        cols = ["device_id", "band", "standard", "rssi", "snr", "retry_rate", "diagnosis"]
+        cols = ["device_id", "band", "standard", "rssi", "snr", "retry_rate", "diagnosis", "confidence"]
         st.dataframe(
             [{k: d[k] for k in cols} for d in devices],
             use_container_width=True,
