@@ -116,6 +116,12 @@ def classify(device, network_devices=None, freq_mhz=5000):
             ), 90
         return "Optimal", "Signal and standard both healthy", 85
 
+	if device["rssi"] < -85 and device["snr"] < 8:
+   	 return "Signal Critically Weak", (
+       		f "RSSI {device['rssi']}dBm / SNR {device['snr']}dB is at the edge of "
+       		 "usability — root cause (distance vs. obstruction) can't be reliably "
+       		 "distinguished at this signal level"
+   	 ), 30
     # --- Fallback ---
     return "Insufficient Information", (
         "Telemetry doesn't clearly match any category — "
