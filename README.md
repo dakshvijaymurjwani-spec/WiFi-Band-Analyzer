@@ -71,7 +71,7 @@ The main objectives of the project are:
 - Capture and analyze Wi-Fi telemetry.
 - Identify client device capabilities.
 - Analyze supported and active Wi-Fi bands.
-- Evaluate RSSI, SNR, PHY rate, retry rate and packet loss.
+- Evaluate RSSI, SNR, PHY rate, retry rate and packet loss and used kalman for denoising before classification.
 - Apply mathematical RF/path-loss models.
 - Classify the likely cause of performance degradation.
 - Provide explainable diagnostic results.
