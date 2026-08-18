@@ -13,18 +13,26 @@ Design commitments:
     both roughly proportionally.
 """
 from wifi_standards import (
+    band_to_freq_mhz,
+    derive_wall_delta_threshold,
     estimate_wall_attenuation,
+    expected_band_gap_db,
     expected_max_rate,
     get_max_rate,
 )
 
 NETWORK_MAX_STANDARD = "wifi6e"
 
-# A wall attenuates 5/6 GHz much harder than 2.4 GHz; distance degrades both
-# roughly proportionally. A cross-band gap wider than this is evidence of an
-# obstruction. Starting value — tune it with a line-of-sight pair and a
-# through-wall pair, and set the threshold where the two separate.
-WALL_DELTA_DB = 12
+# Cross-band threshold, DERIVED rather than picked. It is the frequency-only
+# gap from the Friis equation (6.4 dB for 2.4 -> 5 GHz) plus one substantial
+# barrier's differential loss. A gap wider than this is better explained by
+# an obstruction than by frequency. See wifi_standards.derive_wall_delta_
+# threshold; only the barrier term is a judgement call.
+#
+# The 2.4 -> 6 GHz threshold is higher (~13 dB) because the frequency term is
+# larger, so the pair actually in evidence is used per device rather than one
+# global constant. WALL_DELTA_DB is the 5 GHz case, kept for the test suite.
+WALL_DELTA_DB = derive_wall_delta_threshold("2.4GHz", "5GHz")
 
 # PHY rate below this fraction of the band-realistic ceiling is suspicious,
 # but not on its own a diagnosis — see RETRY_CORROBORATION.
@@ -216,13 +224,19 @@ def band_capability(device):
 
 
 def wall_evidence(device):
-    """Cross-band RSSI gap for one device. Returns (has_evidence, delta_db)."""
+    """Cross-band RSSI gap for one device.
+
+    Returns (has_evidence, delta_db, high_band, threshold_db). The high band
+    is reported because the frequency-only component of the gap differs
+    between 5 and 6 GHz, so they need different thresholds.
+    """
     seen = device.get("band_rssi") or {}
     r24 = seen.get("2.4GHz")
-    r_high = seen.get("5GHz", seen.get("6GHz"))
-    if r24 is None or r_high is None:
-        return False, None
-    return True, round(r24 - r_high, 1)
+    for high in ("5GHz", "6GHz"):
+        if seen.get(high) is not None and r24 is not None:
+            return (True, round(r24 - seen[high], 1), high,
+                    derive_wall_delta_threshold("2.4GHz", high))
+    return False, None, None, None
 
 
 def _trend_note(device):
@@ -237,7 +251,7 @@ def _trend_note(device):
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
-def classify(device, network_devices=None, freq_mhz=5000):
+def classify(device, network_devices=None, freq_mhz=None):
     """Returns (label, reason, confidence).
 
     Rule order is deliberate: capability first (a permanent property beats a
@@ -249,6 +263,8 @@ def classify(device, network_devices=None, freq_mhz=5000):
     band = device.get("band", "5GHz")
     std = device.get("standard", "legacy")
     note = _trend_note(device)
+    if freq_mhz is None:
+        freq_mhz = band_to_freq_mhz(band)
 
     can_5, basis = band_capability(device)
     ap_offered_5 = device.get("ap_offered_5ghz")
@@ -275,21 +291,26 @@ def classify(device, network_devices=None, freq_mhz=5000):
 
     # -- 3. Capable device sitting on 2.4 GHz: the flagship case ------------
     if band == "2.4GHz" and can_5 is not False:
-        has_ev, delta = wall_evidence(device)
+        has_ev, delta, high, threshold = wall_evidence(device)
         if has_ev:
-            if delta > WALL_DELTA_DB:
+            freq_only = expected_band_gap_db("2.4GHz", high)
+            excess = round(delta - freq_only, 1)
+            if delta > threshold:
                 return "Attenuated Signal", (
                     f"{std} device fell back to 2.4 GHz. Cross-band gap is "
-                    f"{delta}dB — wider than frequency alone explains, so an "
-                    f"obstruction is attenuating 5 GHz. Move the device or the "
-                    f"router out of the blocked path; new hardware won't "
+                    f"{delta}dB against {high}; frequency alone accounts for "
+                    f"{freq_only}dB, leaving {excess}dB of excess loss — an "
+                    f"obstruction is attenuating {high}. Move the device or "
+                    f"the router out of the blocked path; new hardware won't "
                     f"help.{note}"
-                ), _confidence(delta - WALL_DELTA_DB, scale=10, floor=60)
+                ), _confidence(delta - threshold, scale=10, floor=60)
             return "Far Distance", (
-                f"{std} device fell back to 2.4 GHz. Cross-band gap is only "
-                f"{delta}dB, consistent with plain distance rather than an "
-                f"obstruction. Move closer or add an access point.{note}"
-            ), _confidence(WALL_DELTA_DB - delta, scale=10, floor=60)
+                f"{std} device fell back to 2.4 GHz. Cross-band gap is "
+                f"{delta}dB against {high}, and frequency alone accounts for "
+                f"{freq_only}dB of it — the {excess}dB remainder is below the "
+                f"{threshold}dB obstruction threshold, so this reads as plain "
+                f"distance. Move closer or add an access point.{note}"
+            ), _confidence(threshold - delta, scale=10, floor=60)
         if can_5:
             return "Insufficient Information", (
                 f"{std} device is on 2.4 GHz despite supporting 5 GHz — it "
